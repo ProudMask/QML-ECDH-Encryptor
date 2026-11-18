@@ -1,68 +1,54 @@
+"""Launch the QML key-agreement demo or run its headless self-test."""
+import argparse
+from pathlib import Path
 import sys
-import os
+from key_agreement import KeyAgreement, self_test
 
-from PySide2.QtCore import QObject, QUrl, Property, Slot, QCoreApplication
-from PySide2.QtGui import QGuiApplication
-from PySide2.QtQml import QQmlApplicationEngine
-from PySide2.QtNetwork import QSslSocket, QSsl, QSslKey, QSslCertificate, 
-QAbstractSocket
 
-from cryptography.hazmat.primitives.asymmetric.ec import 
-EllipticCurvePublicKey, EllipticCurvePrivateKey, ECDH
-from cryptography.hazmat.primitives.serialization import 
-load_pem_private_key, load_pem_public_key, PublicFormat
-from cryptography.hazmat.primitives import serialization, hashes
+def make_backend():
+    from PySide6.QtCore import QObject, Property, Slot
 
-class ECDHKeyExchange(QObject):
-    def __init__(self):
-        super().__init__()
+    class ECDHBackend(QObject):
+        def __init__(self):
+            super().__init__()
+            self.agreement = KeyAgreement()
 
-        # Generate our private key
-        self.private_key = EllipticCurvePrivate.generate()
+        @Property(str, constant=True)
+        def publicKey(self):
+            return self.agreement.public_pem
 
-        # Serialize our public key and expose it as a property
-        self.public_key = self.private_key.public_key()
-        self.serialized_public_key = self.public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        ).decode('utf-8')
-    
-    @Slot(str, result=str)
-    def derive_shared_secret(self, other_party_public_key_str):
-        # Deserialize the other party's public key
-        other_party_public_key = load_pem_public_key(
-            bytes(other_party_public_key_str, 'utf-8'),
-            backend=default_backend()
-        )
+        @Slot(str, result=str)
+        def deriveFingerprint(self, peer_pem):
+            try:
+                return 'Derived-key fingerprint: ' + self.agreement.fingerprint(peer_pem)
+            except ValueError as exc:
+                return 'Error: ' + str(exc)
 
-        # Perform ECDH key agreement to derive the shared secret
-        shared_secret = self.private_key.exchange(
-            ECDH(),
-            other_party_public_key
-        )
+    return ECDHBackend()
 
-        # Hash the shared secret to derive the final key
-        key = hashes.Hash(hashes.SHA256(), backend=default_backend())
-        key.update(shared_secret)
-        final_key = key.finalize()
 
-        # Serialize the final key and return it
-        return final_key.hex()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--self-test', action='store_true')
+    args = parser.parse_args()
+    if args.self_test:
+        success = self_test()
+        print('Independent key agreement: ' + ('PASS' if success else 'FAIL'))
+        return 0 if success else 1
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlApplicationEngine
+    app = QGuiApplication(sys.argv[:1])
+    backend = make_backend()
+    engine = QQmlApplicationEngine()
+    # Register before loading QML and retain both Python objects through app.exec().
+    engine.rootContext().setContextProperty('backend', backend)
+    engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().with_name('main.qml'))))
+    if not engine.rootObjects():
+        print('Unable to load main.qml', file=sys.stderr)
+        return 1
+    return app.exec()
+
 
 if __name__ == '__main__':
-    # Initialize the Qt application
-    app = QGuiApplication(sys.argv)
-
-    # Register the ECDHKeyExchange class as a QML type
-    engine = QQmlApplicationEngine()
-    qml_file = os.path.join(os.path.dirname(__file__), 'main.qml')
-    engine.load(QUrl.fromLocalFile(qml_file))
-    qml_root_object = engine.rootObjects()[0]
-    engine.rootContext().setContextProperty('ECDHKeyExchange', 
-ECDHKeyExchange())
-
-    # Enable SSL support in the Qt network module
-    QSslSocket.setDefaultProtocol(QSsl.TlsV1_2)
-
-    # Start the Qt event loop
-    sys.exit(app.exec_())
+    raise SystemExit(main())
