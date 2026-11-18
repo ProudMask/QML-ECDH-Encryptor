@@ -1,0 +1,2 @@
+cryptography>=46,<51
+PySide6-Essentials>=6.8,<7
